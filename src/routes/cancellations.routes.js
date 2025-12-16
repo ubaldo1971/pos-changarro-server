@@ -44,9 +44,9 @@ router.get('/', verifyToken, async (req, res) => {
         const params = [businessId];
 
         if (status === 'cancelled') {
-            query += ' AND s.cancelled = 1';
+            query += ' AND COALESCE(s.cancelled, 0) = 1';
         } else if (status === 'active') {
-            query += ' AND s.cancelled = 0';
+            query += ' AND COALESCE(s.cancelled, 0) = 0';
         }
 
         if (startDate) {
@@ -67,7 +67,8 @@ router.get('/', verifyToken, async (req, res) => {
         // Add cancellation eligibility
         const salesWithEligibility = sales.map(sale => ({
             ...sale,
-            can_cancel: sale.cancelled === 0 && sale.days_since_sale <= 90,
+            cancelled: sale.cancelled || 0,
+            can_cancel: (sale.cancelled || 0) === 0 && sale.days_since_sale <= 90,
             days_remaining: Math.max(0, 90 - Math.floor(sale.days_since_sale))
         }));
 
