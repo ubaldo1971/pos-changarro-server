@@ -4,5 +4,6 @@ const syncController = require('../controllers/sync.controller');
 
 router.post('/push', syncController.pushChanges);
 router.get('/pull', syncController.pullChanges);
+router.post('/full-products', syncController.fullProductSync);
 
 module.exports = router;
