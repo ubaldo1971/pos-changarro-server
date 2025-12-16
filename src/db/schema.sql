@@ -97,6 +97,9 @@ CREATE TABLE IF NOT EXISTS sales (
     total REAL NOT NULL,
     payment_method TEXT NOT NULL,
     status TEXT DEFAULT 'completed',
+    cancelled INTEGER DEFAULT 0,
+    cancelled_at TEXT,
+    cancellation_id INTEGER,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (business_id) REFERENCES businesses(id),
     FOREIGN KEY (user_id) REFERENCES users(id)
