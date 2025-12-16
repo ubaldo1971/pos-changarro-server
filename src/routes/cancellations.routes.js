@@ -437,4 +437,42 @@ router.get('/report/summary', verifyToken, requireRole(['owner', 'admin']), asyn
     }
 });
 
+/**
+ * GET /api/cancellations/sale/:saleId/items
+ * Get items from a sale for ticket details
+ */
+router.get('/sale/:saleId/items', verifyToken, async (req, res) => {
+    try {
+        const { saleId } = req.params;
+
+        // Verify sale belongs to user's business
+        const sales = await db.query(
+            'SELECT * FROM sales WHERE id = ? AND business_id = ?',
+            [saleId, req.user.business_id]
+        );
+
+        if (sales.length === 0) {
+            return res.status(404).json({ error: 'Sale not found' });
+        }
+
+        // Get sale items with product details
+        const items = await db.query(
+            `SELECT si.*, p.name as product_name, p.barcode
+             FROM sale_items si
+             JOIN products p ON si.product_id = p.id
+             WHERE si.sale_id = ?`,
+            [saleId]
+        );
+
+        res.json({
+            sale: sales[0],
+            items
+        });
+
+    } catch (error) {
+        console.error('Error getting sale items:', error);
+        res.status(500).json({ error: 'Failed to get sale items' });
+    }
+});
+
 module.exports = router;
