@@ -14,6 +14,10 @@ const subscriptionRoutes = require('./routes/subscription.routes');
 const adminRoutes = require('./routes/admin.routes');
 const cancellationsRoutes = require('./routes/cancellations.routes');
 
+// Initialize database
+const db = require('./db/database');
+db.init();
+
 const app = express();
 const server = http.createServer(app);
 
