@@ -64,6 +64,8 @@ router.get('/', verifyToken, async (req, res) => {
 
         const sales = await db.query(query, params);
 
+        console.log(`[TICKETS] Business ${businessId}, Status: ${status}, Found ${sales.length} sales`);
+
         // Add cancellation eligibility
         const salesWithEligibility = sales.map(sale => ({
             ...sale,
