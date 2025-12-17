@@ -249,6 +249,227 @@ router.post('/', verifyToken, requireRole(['owner', 'admin', 'manager']), async 
 });
 
 /**
+ * POST /api/cancellations/partial
+ * Create a partial cancellation (specific items only)
+ */
+router.post('/partial', verifyToken, requireRole(['owner', 'admin', 'manager']), async (req, res) => {
+    try {
+        const {
+            sale_id,
+            items, // Array of { sale_item_id, quantity_to_cancel }
+            reason_code,
+            observations,
+            requires_refund,
+            refund_method
+        } = req.body;
+
+        if (!sale_id || !items || !Array.isArray(items) || items.length === 0) {
+            return res.status(400).json({
+                error: 'Sale ID and items array are required'
+            });
+        }
+
+        if (!reason_code || !SAT_REASONS[reason_code]) {
+            return res.status(400).json({
+                error: 'Valid SAT reason code is required',
+                valid_codes: Object.keys(SAT_REASONS)
+            });
+        }
+
+        // Get sale details
+        const sales = await db.query(
+            'SELECT * FROM sales WHERE id = ? AND business_id = ?',
+            [sale_id, req.user.business_id]
+        );
+
+        if (sales.length === 0) {
+            return res.status(404).json({ error: 'Sale not found' });
+        }
+
+        const sale = sales[0];
+
+        // Check cancellation time limit (90 days)
+        const saleDate = new Date(sale.created_at);
+        const daysSinceSale = (Date.now() - saleDate.getTime()) / (1000 * 60 * 60 * 24);
+
+        if (daysSinceSale > 90) {
+            return res.status(400).json({
+                error: 'Cancellation period expired (90 days)',
+                code: 'PERIOD_EXPIRED'
+            });
+        }
+
+        // Get sale items and validate cancellation quantities
+        const saleItems = await db.query(
+            'SELECT * FROM sale_items WHERE sale_id = ?',
+            [sale_id]
+        );
+
+        const saleItemsMap = new Map(saleItems.map(item => [item.id, item]));
+        let totalRefundAmount = 0;
+        const itemsToCancel = [];
+
+        for (const itemRequest of items) {
+            const saleItem = saleItemsMap.get(itemRequest.sale_item_id);
+
+            if (!saleItem) {
+                return res.status(400).json({
+                    error: `Sale item ${itemRequest.sale_item_id} not found`
+                });
+            }
+
+            const availableQuantity = saleItem.quantity - (saleItem.cancelled_quantity || 0);
+
+            if (itemRequest.quantity_to_cancel > availableQuantity) {
+                return res.status(400).json({
+                    error: `Cannot cancel ${itemRequest.quantity_to_cancel} of item ${saleItem.product_id}. Only ${availableQuantity} available.`,
+                    code: 'QUANTITY_EXCEEDED'
+                });
+            }
+
+            const refundAmount = (saleItem.price * itemRequest.quantity_to_cancel);
+            totalRefundAmount += refundAmount;
+
+            itemsToCancel.push({
+                ...saleItem,
+                quantity_to_cancel: itemRequest.quantity_to_cancel,
+                refund_amount: refundAmount
+            });
+        }
+
+        // Start transaction
+        db.db.exec('BEGIN TRANSACTION');
+
+        try {
+            // Create cancellation record
+            const cancellationResult = await db.run(
+                `INSERT INTO cancellations (
+                    business_id, sale_id, cancelled_by,
+                    cancellation_reason_code, cancellation_reason_text,
+                    observations, requires_refund, refund_method, refund_amount,
+                    refund_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    req.user.business_id,
+                    sale_id,
+                    req.user.id,
+                    reason_code,
+                    SAT_REASONS[reason_code],
+                    observations || null,
+                    requires_refund ? 1 : 0,
+                    refund_method || null,
+                    requires_refund ? totalRefundAmount : null,
+                    requires_refund ? 'pending' : null
+                ]
+            );
+
+            const cancellationId = cancellationResult.lastID;
+
+            // Process each item
+            for (const item of itemsToCancel) {
+                // Record in cancelled_items table
+                await db.run(
+                    `INSERT INTO cancelled_items (
+                        cancellation_id, sale_item_id, product_id, quantity, refund_amount
+                    ) VALUES (?, ?, ?, ?, ?)`,
+                    [
+                        cancellationId,
+                        item.id,
+                        item.product_id,
+                        item.quantity_to_cancel,
+                        item.refund_amount
+                    ]
+                );
+
+                // Update sale_item cancelled_quantity
+                await db.run(
+                    'UPDATE sale_items SET cancelled_quantity = COALESCE(cancelled_quantity, 0) + ? WHERE id = ?',
+                    [item.quantity_to_cancel, item.id]
+                );
+
+                // Reintegrate stock
+                await db.run(
+                    'UPDATE products SET stock = stock + ? WHERE id = ?',
+                    [item.quantity_to_cancel, item.product_id]
+                );
+
+                // Record stock movement
+                await db.run(
+                    `INSERT INTO stock_movements (product_id, user_id, type, quantity, reason)
+                     VALUES (?, ?, 'return', ?, ?)`,
+                    [
+                        item.product_id,
+                        req.user.id,
+                        item.quantity_to_cancel,
+                        `Cancelación parcial venta #${sale_id} - ${SAT_REASONS[reason_code]}`
+                    ]
+                );
+            }
+
+            // Check if ALL items are now fully cancelled - if so, mark sale as cancelled
+            const remainingItems = await db.query(
+                'SELECT SUM(quantity - COALESCE(cancelled_quantity, 0)) as remaining FROM sale_items WHERE sale_id = ?',
+                [sale_id]
+            );
+
+            if (remainingItems[0].remaining === 0) {
+                await db.run(
+                    `UPDATE sales SET 
+                        cancelled = 1,
+                        cancelled_at = CURRENT_TIMESTAMP,
+                        cancellation_id = ?
+                     WHERE id = ?`,
+                    [cancellationId, sale_id]
+                );
+            }
+
+            // Create audit log
+            await db.run(
+                `INSERT INTO cancellation_audit (cancellation_id, action, performed_by, details)
+                 VALUES (?, 'partial_created', ?, ?)`,
+                [
+                    cancellationId,
+                    req.user.id,
+                    JSON.stringify({
+                        reason_code,
+                        requires_refund,
+                        refund_amount: totalRefundAmount,
+                        items_cancelled: itemsToCancel.length
+                    })
+                ]
+            );
+
+            db.db.exec('COMMIT');
+
+            res.status(201).json({
+                success: true,
+                cancellation: {
+                    id: cancellationId,
+                    sale_id,
+                    reason_code,
+                    reason_text: SAT_REASONS[reason_code],
+                    requires_refund,
+                    refund_amount: totalRefundAmount,
+                    items_cancelled: itemsToCancel.map(item => ({
+                        product_id: item.product_id,
+                        quantity_cancelled: item.quantity_to_cancel,
+                        refund_amount: item.refund_amount
+                    }))
+                }
+            });
+
+        } catch (error) {
+            db.db.exec('ROLLBACK');
+            throw error;
+        }
+
+    } catch (error) {
+        console.error('Error creating partial cancellation:', error);
+        res.status(500).json({ error: 'Failed to create partial cancellation' });
+    }
+});
+
+/**
  * GET /api/cancellations/:id
  * Get cancellation details
  */
@@ -442,7 +663,7 @@ router.get('/report/summary', verifyToken, requireRole(['owner', 'admin']), asyn
 
 /**
  * GET /api/cancellations/sale/:saleId/items
- * Get items from a sale for ticket details
+ * Get items from a sale for ticket details (with cancellation info)
  */
 router.get('/sale/:saleId/items', verifyToken, async (req, res) => {
     try {
@@ -458,9 +679,13 @@ router.get('/sale/:saleId/items', verifyToken, async (req, res) => {
             return res.status(404).json({ error: 'Sale not found' });
         }
 
-        // Get sale items with product details
+        // Get sale items with product details and cancellation info
         const items = await db.query(
-            `SELECT si.*, p.name as product_name, p.barcode
+            `SELECT si.*, 
+                    p.name as product_name, 
+                    p.barcode,
+                    COALESCE(si.cancelled_quantity, 0) as cancelled_quantity,
+                    (si.quantity - COALESCE(si.cancelled_quantity, 0)) as available_to_cancel
              FROM sale_items si
              JOIN products p ON si.product_id = p.id
              WHERE si.sale_id = ?`,
