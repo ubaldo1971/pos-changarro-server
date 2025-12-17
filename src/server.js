@@ -14,6 +14,7 @@ const subscriptionRoutes = require('./routes/subscription.routes');
 const adminRoutes = require('./routes/admin.routes');
 const cancellationsRoutes = require('./routes/cancellations.routes');
 const salesRoutes = require('./routes/sales.routes');
+const productsRoutes = require('./routes/products.routes');
 
 // Initialize database
 const db = require('./db/database');
@@ -62,6 +63,7 @@ app.use('/api/subscription', subscriptionRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/cancellations', cancellationsRoutes);
 app.use('/api/sales', salesRoutes);
+app.use('/api/products', productsRoutes);
 
 // Socket.IO connection handling
 const connectedDevices = new Map();
