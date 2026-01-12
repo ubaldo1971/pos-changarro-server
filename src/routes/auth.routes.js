@@ -121,6 +121,38 @@ router.post('/register', async (req, res) => {
             [userId, tokens.refreshToken, refreshExpiry.toISOString()]
         );
 
+
+        // Create Default Cashier (Cajero 1)
+        try {
+            const hashedCashierPassword = await bcrypt.hash('cajero123', SALT_ROUNDS);
+            await db.run(
+                `INSERT INTO users (business_id, name, email, password, role, pin, phone, active) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                [businessId, 'Cajero 1', `cajero1@${slug}.com`, hashedCashierPassword, 'cashier', '5678', null, 1]
+            );
+        } catch (e) {
+            console.error('Error creating default cashier:', e);
+            // Continue anyway
+        }
+
+        // Create 2 Test Products
+        try {
+            const testProducts = [
+                { name: 'Producto Prueba 1', price: 10.00, cost: 5.00, stock: 100 },
+                { name: 'Producto Prueba 2', price: 20.00, cost: 10.00, stock: 50 }
+            ];
+
+            for (const p of testProducts) {
+                await db.run(
+                    `INSERT INTO products (business_id, name, price, cost, stock, created_at) 
+                     VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+                    [businessId, p.name, p.price, p.cost, p.stock]
+                );
+            }
+        } catch (e) {
+            console.error('Error creating test products:', e);
+        }
+
         res.status(201).json({
             message: 'Registration successful',
             user: {
