@@ -177,3 +177,63 @@ CREATE TABLE IF NOT EXISTS business_users (
     FOREIGN KEY (invited_by) REFERENCES users(id),
     UNIQUE(user_id, business_id)
 );
+
+-- Cancellations Table
+CREATE TABLE IF NOT EXISTS cancellations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    business_id INTEGER NOT NULL,
+    sale_id INTEGER NOT NULL,
+    cancelled_by INTEGER NOT NULL,
+    cancellation_reason_code TEXT NOT NULL,
+    cancellation_reason_text TEXT NOT NULL,
+    observations TEXT,
+    requires_refund INTEGER DEFAULT 0,
+    refund_method TEXT,
+    refund_status TEXT DEFAULT 'pending',
+    refund_amount REAL,
+    refund_processed_at TEXT,
+    refund_processed_by INTEGER,
+    cancelled_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (business_id) REFERENCES businesses(id),
+    FOREIGN KEY (sale_id) REFERENCES sales(id),
+    FOREIGN KEY (cancelled_by) REFERENCES users(id)
+);
+
+-- Refunds Table
+CREATE TABLE IF NOT EXISTS refunds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cancellation_id INTEGER NOT NULL,
+    amount REAL NOT NULL,
+    method TEXT NOT NULL,
+    reference TEXT,
+    bank_account TEXT,
+    notes TEXT,
+    processed_by INTEGER NOT NULL,
+    processed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (cancellation_id) REFERENCES cancellations(id)
+);
+
+-- Cancellation Audit Table
+CREATE TABLE IF NOT EXISTS cancellation_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cancellation_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    performed_by INTEGER NOT NULL,
+    details TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (cancellation_id) REFERENCES cancellations(id)
+);
+
+-- Cancelled Items Table (for partial cancellations)
+CREATE TABLE IF NOT EXISTS cancelled_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cancellation_id INTEGER NOT NULL,
+    sale_item_id INTEGER NOT NULL,
+    product_id INTEGER NOT NULL,
+    quantity INTEGER NOT NULL,
+    refund_amount REAL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (cancellation_id) REFERENCES cancellations(id),
+    FOREIGN KEY (sale_item_id) REFERENCES sale_items(id),
+    FOREIGN KEY (product_id) REFERENCES products(id)
+);

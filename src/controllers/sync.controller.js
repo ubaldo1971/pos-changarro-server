@@ -24,14 +24,88 @@ exports.pushChanges = async (req, res) => {
             const record = typeof data === 'string' ? JSON.parse(data) : data;
 
             if (operation === 'CREATE') {
-                const keys = Object.keys(record).filter(k => k !== 'id'); // Exclude local ID
-                const values = keys.map(k => record[k]);
-                const placeholders = keys.map(() => '?').join(',');
+                if (table_name === 'sales' && record.items) {
+                    // Special handling for sales with items
+                    const items = record.items;
+                    const saleRecord = { ...record };
+                    delete saleRecord.items;
+                    delete saleRecord.id;
 
-                await db.run(
-                    `INSERT INTO ${table_name} (${keys.join(',')}) VALUES (${placeholders})`,
-                    values
-                );
+                    // Map local columns to server columns
+                    if (saleRecord.date) {
+                        saleRecord.created_at = saleRecord.date;
+                        delete saleRecord.date;
+                    }
+                    if (saleRecord.payment_type) {
+                        const methodMap = {
+                            'efectivo': 'cash',
+                            'tarjeta': 'card',
+                            'transferencia': 'transfer',
+                            'otro': 'other'
+                        };
+                        saleRecord.payment_method = methodMap[saleRecord.payment_type] || saleRecord.payment_type;
+
+                        // Fallback if not mapped and not valid?
+                        // Schema check: ('cash', 'card', 'transfer', 'other')
+                        if (!['cash', 'card', 'transfer', 'other'].includes(saleRecord.payment_method)) {
+                            saleRecord.payment_method = 'other'; // Prevent constraint failure
+                        }
+
+                        delete saleRecord.payment_type;
+                    }
+                    // Remove local-only columns that don't exist on server
+                    delete saleRecord.cash_received;
+                    delete saleRecord.cash_change;
+                    delete saleRecord.payment_reference;
+
+                    const keys = Object.keys(saleRecord);
+                    const values = keys.map(k => saleRecord[k]);
+                    const placeholders = keys.map(() => '?').join(',');
+
+                    try {
+                        const result = await db.run(
+                            `INSERT INTO sales (${keys.join(',')}) VALUES (${placeholders})`,
+                            values
+                        );
+
+                        const newSaleId = result.id;
+
+                        // Insert items
+                        for (const item of items) {
+                            await db.run(
+                                `INSERT INTO sale_items (sale_id, product_id, quantity, price, subtotal) VALUES (?, ?, ?, ?, ?)`,
+                                [
+                                    newSaleId,
+                                    item.product_id,
+
+                                    item.quantity,
+                                    item.unit_price,
+                                    item.subtotal
+                                ]
+                            );
+
+                            // Update stock
+                            await db.run(
+                                `UPDATE products SET stock = stock - ? WHERE id = ?`,
+                                [item.quantity, item.product_id]
+                            );
+                        }
+                    } catch (err) {
+                        console.error('Error syncing sale:', err.message);
+                        // Don't rethrow to avoid crashing the whole sync loop, catch next time
+                        results.failed++;
+                        results.errors.push({ operation: op, error: err.message });
+                    }
+                } else {
+                    const keys = Object.keys(record).filter(k => k !== 'id');
+                    const values = keys.map(k => record[k]);
+                    const placeholders = keys.map(() => '?').join(',');
+
+                    await db.run(
+                        `INSERT INTO ${table_name} (${keys.join(',')}) VALUES (${placeholders})`,
+                        values
+                    );
+                }
             } else if (operation === 'UPDATE') {
                 const id = record.id;
                 const keys = Object.keys(record).filter(k => k !== 'id');
@@ -104,10 +178,11 @@ exports.fullProductSync = async (req, res) => {
             try {
                 await db.run(`
                     INSERT INTO products (
-                        business_id, name, barcode, price, cost, stock, 
+                        id, business_id, name, barcode, price, cost, stock, 
                         min_stock, category_id, image, active, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `, [
+                    product.id,
                     businessId,
                     product.name,
                     product.barcode || null,

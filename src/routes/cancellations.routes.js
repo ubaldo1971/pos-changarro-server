@@ -23,7 +23,15 @@ const CANCELLATION_LIMITS = {
  */
 router.get('/', verifyToken, async (req, res) => {
     try {
+        console.log('[DEBUG] GET /api/cancellations params:', req.query);
+        console.log('[DEBUG] User:', req.user);
+
         const { status, startDate, endDate, limit = 50 } = req.query;
+        if (!req.user || !req.user.business_id) {
+            console.error('[DEBUG] No business_id for user');
+            return res.status(400).json({ error: 'User has no business_id' });
+        }
+
         const businessId = req.user.business_id;
 
         let query = `
@@ -62,23 +70,34 @@ router.get('/', verifyToken, async (req, res) => {
         query += ' ORDER BY s.created_at DESC LIMIT ?';
         params.push(parseInt(limit));
 
+        console.log('[DEBUG] Executing query:', query, params);
+
+        // Use db.query handling
         const sales = await db.query(query, params);
 
         console.log(`[TICKETS] Business ${businessId}, Status: ${status}, Found ${sales.length} sales`);
 
         // Add cancellation eligibility
-        const salesWithEligibility = sales.map(sale => ({
-            ...sale,
-            cancelled: sale.cancelled || 0,
-            can_cancel: (sale.cancelled || 0) === 0 && sale.days_since_sale <= 90,
-            days_remaining: Math.max(0, 90 - Math.floor(sale.days_since_sale))
-        }));
+        const salesWithEligibility = sales.map(sale => {
+            try {
+                return {
+                    ...sale,
+                    cancelled: sale.cancelled || 0,
+                    can_cancel: (sale.cancelled || 0) === 0 && (sale.days_since_sale || 0) <= 90,
+                    days_remaining: Math.max(0, 90 - Math.floor(sale.days_since_sale || 0))
+                };
+            } catch (mapErr) {
+                console.error('Error mapping sale:', sale, mapErr);
+                return sale;
+            }
+        });
 
         res.json({ sales: salesWithEligibility });
 
     } catch (error) {
         console.error('Error getting cancellations:', error);
-        res.status(500).json({ error: 'Failed to get cancellations' });
+        console.error('Stack:', error.stack);
+        res.status(500).json({ error: 'Failed to get cancellations', details: error.message });
     }
 });
 
@@ -149,7 +168,7 @@ router.post('/', verifyToken, requireRole(['owner', 'admin', 'manager']), async 
         );
 
         // Start transaction
-        db.db.exec('BEGIN TRANSACTION');
+        db.getDb().exec('BEGIN TRANSACTION');
 
         try {
             // Create cancellation record
@@ -174,7 +193,7 @@ router.post('/', verifyToken, requireRole(['owner', 'admin', 'manager']), async 
                 ]
             );
 
-            const cancellationId = cancellationResult.lastID;
+            const cancellationId = cancellationResult.id;
 
             // Update sale as cancelled
             await db.run(
@@ -222,7 +241,7 @@ router.post('/', verifyToken, requireRole(['owner', 'admin', 'manager']), async 
                 ]
             );
 
-            db.db.exec('COMMIT');
+            db.getDb().exec('COMMIT');
 
             res.status(201).json({
                 success: true,
@@ -238,7 +257,7 @@ router.post('/', verifyToken, requireRole(['owner', 'admin', 'manager']), async 
             });
 
         } catch (error) {
-            db.db.exec('ROLLBACK');
+            db.getDb().exec('ROLLBACK');
             throw error;
         }
 
@@ -338,7 +357,7 @@ router.post('/partial', verifyToken, requireRole(['owner', 'admin', 'manager']),
         }
 
         // Start transaction
-        db.db.exec('BEGIN TRANSACTION');
+        db.getDb().exec('BEGIN TRANSACTION');
 
         try {
             // Create cancellation record
@@ -363,7 +382,7 @@ router.post('/partial', verifyToken, requireRole(['owner', 'admin', 'manager']),
                 ]
             );
 
-            const cancellationId = cancellationResult.lastID;
+            const cancellationId = cancellationResult.id;
 
             // Process each item
             for (const item of itemsToCancel) {
@@ -439,7 +458,7 @@ router.post('/partial', verifyToken, requireRole(['owner', 'admin', 'manager']),
                 ]
             );
 
-            db.db.exec('COMMIT');
+            db.getDb().exec('COMMIT');
 
             res.status(201).json({
                 success: true,
@@ -459,7 +478,7 @@ router.post('/partial', verifyToken, requireRole(['owner', 'admin', 'manager']),
             });
 
         } catch (error) {
-            db.db.exec('ROLLBACK');
+            db.getDb().exec('ROLLBACK');
             throw error;
         }
 
@@ -680,14 +699,15 @@ router.get('/sale/:saleId/items', verifyToken, async (req, res) => {
         }
 
         // Get sale items with product details and cancellation info
+        // Use LEFT JOIN because products might not exist in server DB (sync issue)
         const items = await db.query(
             `SELECT si.*, 
-                    p.name as product_name, 
+                    COALESCE(p.name, si.product_name, 'Producto #' || si.product_id) as product_name, 
                     p.barcode,
                     COALESCE(si.cancelled_quantity, 0) as cancelled_quantity,
                     (si.quantity - COALESCE(si.cancelled_quantity, 0)) as available_to_cancel
              FROM sale_items si
-             JOIN products p ON si.product_id = p.id
+             LEFT JOIN products p ON si.product_id = p.id
              WHERE si.sale_id = ?`,
             [saleId]
         );

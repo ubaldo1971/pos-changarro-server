@@ -95,15 +95,67 @@ function runMigrations(database) {
             details TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (cancellation_id) REFERENCES cancellations(id)
-        )`
+        )`,
+        // Create pending_subscriptions table if not exists
+        `CREATE TABLE IF NOT EXISTS pending_subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            business_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            plan_key TEXT NOT NULL,
+            preference_id TEXT,
+            payment_id TEXT,
+            external_reference TEXT,
+            status TEXT CHECK(status IN ('pending', 'completed', 'failed', 'cancelled')) DEFAULT 'pending',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            completed_at DATETIME,
+            FOREIGN KEY (business_id) REFERENCES businesses(id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )`,
+        // Create business_users table if not exists
+        // Create business_users table if not exists
+        `CREATE TABLE IF NOT EXISTS business_users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            business_id INTEGER NOT NULL,
+            role TEXT CHECK(role IN ('owner', 'admin', 'manager', 'cashier', 'accountant', 'member')) DEFAULT 'member',
+            active INTEGER DEFAULT 1,
+            invited_by INTEGER,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+            FOREIGN KEY (invited_by) REFERENCES users(id),
+            UNIQUE(user_id, business_id)
+        )`,
+        // Fix for missing columns used in auth middleware
+        "ALTER TABLE businesses ADD COLUMN suspended INTEGER DEFAULT 0",
+        "ALTER TABLE businesses ADD COLUMN plan_limits TEXT",
+        // Add product_name to sale_items for display purposes
+        "ALTER TABLE sale_items ADD COLUMN product_name TEXT",
+        // Add cancelled_quantity to sale_items for partial cancellations
+        "ALTER TABLE sale_items ADD COLUMN cancelled_quantity INTEGER DEFAULT 0",
+        // Create cancelled_items table for partial cancellations
+        `CREATE TABLE IF NOT EXISTS cancelled_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cancellation_id INTEGER NOT NULL,
+            sale_item_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL,
+            refund_amount REAL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (cancellation_id) REFERENCES cancellations(id),
+            FOREIGN KEY (sale_item_id) REFERENCES sale_items(id),
+            FOREIGN KEY (product_id) REFERENCES products(id)
+        )`,
+        // Add client_sale_id to sales table for sync deduplication
+        "ALTER TABLE sales ADD COLUMN client_sale_id INTEGER"
     ];
 
     migrations.forEach((sql, index) => {
         database.run(sql, [], (err) => {
             if (err) {
                 // Ignore "duplicate column" errors - means migration already ran
-                if (!err.message.includes('duplicate column') && !err.message.includes('already exists')) {
-                    console.log(`Migration ${index + 1} skipped:`, err.message.substring(0, 50));
+                if (!err.message.includes('duplicate column') && !err.message.includes('already exists') && !err.message.includes('no such table')) {
+                    console.log(`Migration ${index + 1} skipped/applied:`, err.message);
                 }
             } else {
                 console.log(`Migration ${index + 1} applied successfully`);

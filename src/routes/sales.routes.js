@@ -15,7 +15,8 @@ router.post('/', verifyToken, async (req, res) => {
             payment_reference,
             cash_received,
             cash_change,
-            items
+            items,
+            client_sale_id
         } = req.body;
 
         if (!total || !items || !Array.isArray(items) || items.length === 0) {
@@ -27,18 +28,40 @@ router.post('/', verifyToken, async (req, res) => {
         const businessId = req.user.business_id;
         const userId = req.user.id;
 
-        // Start transaction
-        db.db.exec('BEGIN TRANSACTION');
-
-        try {
-            // Create sale record
-            const saleResult = await db.run(
-                `INSERT INTO sales (business_id, user_id, total, payment_method, status, created_at)
-                 VALUES (?, ?, ?, ?, 'completed', datetime('now'))`,
-                [businessId, userId, total, payment_method || 'cash']
+        // Check for duplicate sale using client_sale_id
+        if (client_sale_id) {
+            const existingSale = await db.query(
+                'SELECT id FROM sales WHERE business_id = ? AND client_sale_id = ?',
+                [businessId, client_sale_id]
             );
 
-            const saleId = saleResult.lastID;
+            if (existingSale.length > 0) {
+                console.log(`[SALES] Duplicate detected: client_sale_id ${client_sale_id} already exists as sale #${existingSale[0].id}`);
+                return res.status(200).json({
+                    success: true,
+                    duplicate: true,
+                    sale: {
+                        id: existingSale[0].id,
+                        total,
+                        payment_method,
+                        items_count: items.length
+                    }
+                });
+            }
+        }
+
+        // Start transaction
+        db.getDb().exec('BEGIN TRANSACTION');
+
+        try {
+            // Create sale record with client_sale_id for deduplication
+            const saleResult = await db.run(
+                `INSERT INTO sales (business_id, user_id, total, payment_method, status, client_sale_id, created_at)
+                 VALUES (?, ?, ?, ?, 'completed', ?, datetime('now'))`,
+                [businessId, userId, total, payment_method || 'cash', client_sale_id || null]
+            );
+
+            const saleId = saleResult.id;
 
             // Create sale items
             for (const item of items) {
@@ -62,7 +85,7 @@ router.post('/', verifyToken, async (req, res) => {
                 );
             }
 
-            db.db.exec('COMMIT');
+            db.getDb().exec('COMMIT');
 
             console.log(`[SALES] Created sale #${saleId} for business ${businessId}, total: $${total}`);
 
@@ -77,7 +100,7 @@ router.post('/', verifyToken, async (req, res) => {
             });
 
         } catch (error) {
-            db.db.exec('ROLLBACK');
+            db.getDb().exec('ROLLBACK');
             throw error;
         }
 
