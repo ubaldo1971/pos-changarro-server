@@ -162,7 +162,9 @@ router.post('/login', async (req, res) => {
             [email]
         );
 
+        // Check if user exists
         if (users.length === 0) {
+            console.log(`[LOGIN FAILED] User not found for email: ${email}`);
             return res.status(401).json({
                 error: 'Invalid email or password',
                 code: 'INVALID_CREDENTIALS'
@@ -170,9 +172,12 @@ router.post('/login', async (req, res) => {
         }
 
         const user = users[0];
+        console.log(`[LOGIN DEBUG] Found user: ${user.email} (ID: ${user.id}), Active: ${user.active}`);
 
         // Verify password
         const validPassword = await bcrypt.compare(password, user.password);
+        console.log(`[LOGIN DEBUG] Password match for ${user.email}: ${validPassword}`);
+
         if (!validPassword) {
             return res.status(401).json({
                 error: 'Invalid email or password',
@@ -434,4 +439,8 @@ router.get('/plan-limits', (req, res) => {
     res.json({ plans: PLAN_LIMITS });
 });
 
+
+
 module.exports = router;
+
+
